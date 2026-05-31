@@ -643,7 +643,9 @@ int main(void) {
         if (touch_get(&lx, &ly)) {
             Button btn = hit_button(lx, ly);
             switch (btn) {
+                case BTN_LAST: comms_send_cmd(CMD_PREV); break;
                 case BTN_PLAY: comms_send_cmd(CMD_PLAY); break;
+                case BTN_STOP: comms_send_cmd(CMD_STOP); break;
                 case BTN_NEXT: comms_send_cmd(CMD_NEXT); break;
                 default: break;
             }
