@@ -369,6 +369,42 @@ static int layout_field(RLine *rl, int n, const char *text,
     return n;
 }
 
+static void display_metadata(const SidMeta *m);  // forward declaration
+
+// Track the current song title so we reload the background only on song change
+static char g_bg_name[SID_TITLE_LEN + 1] = "";
+
+// Try to open <name>.bmp from SD root. Returns true on success.
+static bool try_open_bg(const char *name) {
+    if (!name || name[0] == '\0') return false;
+    char path[48];
+    snprintf(path, sizeof(path), "0:/%s.bmp", name);
+    return f_open(&g_bg_fil, path, FA_READ) == FR_OK;
+}
+
+// Close the current background and load the best matching BMP:
+//   1. <meta.filename>.bmp   (exact SID file name, no extension)
+//   2. <meta.title>.bmp      (fallback if filename not populated)
+//   3. default.bmp           (final fallback)
+static void load_background(const SidMeta *m) {
+    f_close(&g_bg_fil);
+    if (!try_open_bg(m->filename) &&
+        !try_open_bg(m->title))
+        f_open(&g_bg_fil, "0:/default.bmp", FA_READ);
+    display_blended();
+}
+
+// Called whenever a new metadata packet arrives.
+// Uses title for change-detection (always populated); reloads background on change.
+static void on_new_meta(SidMeta *m) {
+    if (strncmp(m->title, g_bg_name, SID_TITLE_LEN) != 0) {
+        strncpy(g_bg_name, m->title, SID_TITLE_LEN);
+        g_bg_name[SID_TITLE_LEN] = '\0';
+        load_background(m);
+    }
+    display_metadata(m);
+}
+
 // Render metadata transparently: for each display row in the text area,
 // re-read the background from the BMP files and paint only the lit pixels.
 static void display_metadata(const SidMeta *m) {
@@ -615,7 +651,7 @@ int main(void) {
         lcd_fill(0xF800); while (true) tight_loop_contents();
     }
 
-    if (f_open(&g_bg_fil, "0:/commando.bmp", FA_READ) != FR_OK) {
+    if (f_open(&g_bg_fil, "0:/default.bmp", FA_READ) != FR_OK) {
         lcd_fill(0x001F); while (true) tight_loop_contents();
     }
     if (f_open(&g_fg_fil, "0:/controls.bmp", FA_READ) != FR_OK) {
@@ -636,7 +672,7 @@ int main(void) {
 
     while (true) {
         // Receive metadata from Player Pico (non-blocking)
-        if (comms_poll(&meta)) display_metadata(&meta);
+        if (comms_poll(&meta)) on_new_meta(&meta);
 
         // Handle touch
         uint16_t lx, ly;
@@ -651,7 +687,7 @@ int main(void) {
             }
             if (btn != BTN_NONE) {
                 while (finger_down()) {
-                    if (comms_poll(&meta)) display_metadata(&meta);
+                    if (comms_poll(&meta)) on_new_meta(&meta);
                     sleep_ms(20);
                 }
                 sleep_ms(50);
