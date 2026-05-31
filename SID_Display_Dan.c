@@ -138,56 +138,66 @@ static bool read_bmp_info(FIL *fp, BmpInfo *info) {
 }
 
 // --- Blended display ---
+// File handles and BMP layout are module globals so display_metadata()
+// can re-read rows from the SD card for transparent text rendering.
+
+static FIL      g_bg_fil,  g_fg_fil;
+static BmpInfo  g_bg,      g_fg;
+static uint16_t g_x_off,   g_y_off;
+static uint16_t g_draw_w,  g_draw_h;
+static uint16_t g_fg_cols, g_fg_rows;
+static bool     g_bmp_ready = false;
 
 static uint8_t raw_bg[LCD_WIDTH * 2];
 static uint8_t raw_fg[LCD_WIDTH * 2];
 static uint8_t pxl   [LCD_WIDTH * 2];
 
-static void display_blended(FIL *bg_fp, FIL *fg_fp) {
-    BmpInfo bg, fg;
-    if (!read_bmp_info(bg_fp, &bg) || bg.bpp != 16) { lcd_fill(0x07E0); return; }
-    if (!read_bmp_info(fg_fp, &fg) || fg.bpp != 16) { lcd_fill(0x07E0); return; }
-
-    uint16_t draw_w = bg.width  < LCD_WIDTH  ? bg.width  : LCD_WIDTH;
-    uint16_t draw_h = bg.height < LCD_HEIGHT ? bg.height : LCD_HEIGHT;
-    uint16_t x_off  = bg.width  < LCD_WIDTH  ? (LCD_WIDTH  - bg.width)  / 2 : 0;
-    uint16_t y_off  = bg.height < LCD_HEIGHT ? (LCD_HEIGHT - bg.height) / 2 : 0;
-
-    uint16_t fg_cols = fg.width  < draw_w ? fg.width  : draw_w;
-    uint16_t fg_rows = fg.height < draw_h ? fg.height : draw_h;
-
+// Read one blended row (image-relative index dy) into pxl[].
+static void read_blended_row(uint16_t dy) {
     UINT br;
-    for (uint16_t y = 0; y < draw_h; y++) {
-        uint32_t bg_row = bg.top_down ? y : (uint32_t)(bg.height - 1 - y);
-        f_lseek(bg_fp, bg.data_off + (FSIZE_t)bg_row * bg.row_bytes);
-        f_read(bg_fp, raw_bg, draw_w * 2, &br);
+    uint32_t bg_row = g_bg.top_down ? dy : (uint32_t)(g_bg.height - 1 - dy);
+    f_lseek(&g_bg_fil, g_bg.data_off + (FSIZE_t)bg_row * g_bg.row_bytes);
+    f_read(&g_bg_fil, raw_bg, g_draw_w * 2, &br);
 
-        bool has_fg = (y < fg_rows);
-        if (has_fg) {
-            uint32_t fg_row = fg.top_down ? y : (uint32_t)(fg.height - 1 - y);
-            f_lseek(fg_fp, fg.data_off + (FSIZE_t)fg_row * fg.row_bytes);
-            f_read(fg_fp, raw_fg, fg_cols * 2, &br);
+    bool has_fg = (dy < g_fg_rows);
+    if (has_fg) {
+        uint32_t fg_row = g_fg.top_down ? dy : (uint32_t)(g_fg.height - 1 - dy);
+        f_lseek(&g_fg_fil, g_fg.data_off + (FSIZE_t)fg_row * g_fg.row_bytes);
+        f_read(&g_fg_fil, raw_fg, g_fg_cols * 2, &br);
+    }
+
+    for (uint16_t x = 0; x < g_draw_w; x++) {
+        uint16_t bg16 = (uint16_t)(raw_bg[x*2] | ((uint16_t)raw_bg[x*2+1] << 8));
+        uint16_t px;
+        if (has_fg && x < g_fg_cols) {
+            uint16_t fg16 = (uint16_t)(raw_fg[x*2] | ((uint16_t)raw_fg[x*2+1] << 8));
+            px = (fg16 != 0xFFFF) ? fg16 : bg16;
+        } else {
+            px = bg16;
         }
+        pxl[x*2]     = (uint8_t)(px >> 8);
+        pxl[x*2 + 1] = (uint8_t)(px & 0xFF);
+    }
+}
 
-        for (uint16_t x = 0; x < draw_w; x++) {
-            uint16_t bg16 = (uint16_t)(raw_bg[x*2] | ((uint16_t)raw_bg[x*2+1] << 8));
-            uint16_t px;
+static void display_blended(void) {
+    if (!read_bmp_info(&g_bg_fil, &g_bg) || g_bg.bpp != 16) { lcd_fill(0x07E0); return; }
+    if (!read_bmp_info(&g_fg_fil, &g_fg) || g_fg.bpp != 16) { lcd_fill(0x07E0); return; }
 
-            if (has_fg && x < fg_cols) {
-                uint16_t fg16 = (uint16_t)(raw_fg[x*2] | ((uint16_t)raw_fg[x*2+1] << 8));
-                px = (fg16 != 0xFFFF) ? fg16 : bg16;
-            } else {
-                px = bg16;
-            }
+    g_draw_w  = g_bg.width  < LCD_WIDTH  ? g_bg.width  : LCD_WIDTH;
+    g_draw_h  = g_bg.height < LCD_HEIGHT ? g_bg.height : LCD_HEIGHT;
+    g_x_off   = g_bg.width  < LCD_WIDTH  ? (LCD_WIDTH  - g_bg.width)  / 2 : 0;
+    g_y_off   = g_bg.height < LCD_HEIGHT ? (LCD_HEIGHT - g_bg.height) / 2 : 0;
+    g_fg_cols = g_fg.width  < g_draw_w   ? g_fg.width  : g_draw_w;
+    g_fg_rows = g_fg.height < g_draw_h   ? g_fg.height : g_draw_h;
+    g_bmp_ready = true;
 
-            pxl[x*2]     = (uint8_t)(px >> 8);
-            pxl[x*2 + 1] = (uint8_t)(px & 0xFF);
-        }
-
-        lcd_set_window(x_off, y_off + y, x_off + draw_w - 1, y_off + y);
+    for (uint16_t y = 0; y < g_draw_h; y++) {
+        read_blended_row(y);
+        lcd_set_window(g_x_off, g_y_off + y, g_x_off + g_draw_w - 1, g_y_off + y);
         gpio_put(LCD_DC, 1);
         gpio_put(LCD_CS, 0);
-        spi_write_blocking(SPI_PORT, pxl, draw_w * 2);
+        spi_write_blocking(SPI_PORT, pxl, g_draw_w * 2);
         gpio_put(LCD_CS, 1);
     }
 }
@@ -321,19 +331,111 @@ static void lcd_text(uint16_t x, uint16_t y, const char *s, uint16_t fg, uint16_
     }
 }
 
-// Render song metadata as three lines at the top of the screen.
-// Lines are padded to 40 chars so any previous text is fully overwritten.
+// --- Transparent 2x metadata rendering ---
+// Text is drawn by re-reading BMP rows from the SD card and overlaying
+// only the lit font pixels, so the background image shows through.
+
+#define CHAR2W  16
+#define CHAR2H  16
+#define CPL2    (LCD_WIDTH / CHAR2W)   // 20 chars per line
+
+// One rendered line of text (word-wrapped)
+#define MAX_RLINES  8
+typedef struct { char text[CPL2 + 1]; uint16_t y; uint16_t fg; } RLine;
+
+// Word-wrap one metadata field into rl[], advance *y. Returns new line count.
+static int layout_field(RLine *rl, int n, const char *text,
+                        uint16_t *y_io, uint16_t fg) {
+    int len = (int)strlen(text);
+    if (len == 0) return n;
+    int pos = 0;
+    while (pos < len && n < MAX_RLINES) {
+        int rem  = len - pos;
+        int wrap = (rem <= CPL2) ? rem : CPL2;
+        if (rem > CPL2) {
+            while (wrap > 0 && text[pos + wrap] != ' ') wrap--;
+            if (wrap == 0) wrap = CPL2;
+        }
+        memset(rl[n].text, ' ', CPL2);
+        rl[n].text[CPL2] = '\0';
+        memcpy(rl[n].text, text + pos, wrap < CPL2 ? wrap : CPL2);
+        rl[n].y  = *y_io;
+        rl[n].fg = fg;
+        n++;
+        pos += wrap;
+        while (pos < len && text[pos] == ' ') pos++;
+        *y_io += CHAR2H;
+    }
+    return n;
+}
+
+// Render metadata transparently: for each display row in the text area,
+// re-read the background from the BMP files and paint only the lit pixels.
 static void display_metadata(const SidMeta *m) {
-    char line[41];
-    snprintf(line, sizeof(line), "%-40.40s", m->title);
-    lcd_text(0,  2, line, 0xFFFF, 0x0000);          // white  — title
+    if (!g_bmp_ready) return;
 
-    snprintf(line, sizeof(line), "%-40.40s", m->author);
-    lcd_text(0, 12, line, 0xFD20, 0x0000);          // orange — author
+    // Phase 1 — build layout
+    RLine    rl[MAX_RLINES];
+    int      nl = 0;
+    uint16_t y  = 0;
 
-    snprintf(line, sizeof(line), "Song %d/%d  %-26.26s",
-             m->song_num, m->song_count, m->released);
-    lcd_text(0, 22, line, 0x07FF, 0x0000);          // cyan   — song# / year
+    nl = layout_field(rl, nl, m->title,    &y, 0xFFFF);  // white
+    nl = layout_field(rl, nl, m->author,   &y, 0xFD20);  // orange
+    nl = layout_field(rl, nl, m->released, &y, 0x07FF);  // cyan
+
+    char song[CPL2 + 1];
+    int slen = snprintf(song, sizeof(song), "Song %d of %d",
+                        m->song_num, m->song_count);
+    if (slen < CPL2) memset(song + slen, ' ', CPL2 - slen);
+    song[CPL2] = '\0';
+    nl = layout_field(rl, nl, song, &y, 0xAFE5);          // green
+
+    if (nl == 0) return;
+    uint16_t total_h  = rl[nl - 1].y + CHAR2H;
+    uint16_t max_h    = MAX_RLINES * CHAR2H;   // maximum area any metadata could occupy
+
+    // Phase 2 — row scan: read background, overlay font pixels
+    for (uint16_t dy = 0; dy < total_h; dy++) {
+        read_blended_row(dy);   // fills pxl[] with the composited background
+
+        for (int li = 0; li < nl; li++) {
+            if (dy < rl[li].y || dy >= rl[li].y + CHAR2H) continue;
+            int      frow = (dy - rl[li].y) / 2;  // original 8-px font row
+            uint16_t fg   = rl[li].fg;
+            for (int ci = 0; ci < CPL2; ci++) {
+                uint8_t c = (uint8_t)rl[li].text[ci];
+                if (c < 0x20 || c > 0x7E) continue;
+                uint8_t bits = font8x8[c - 0x20][frow];
+                for (int col = 0; col < 8; col++) {
+                    if (!(bits & (1 << col))) continue;
+                    int px = ci * 16 + col * 2;    // first of two doubled pixels
+                    pxl[px*2]         = (uint8_t)(fg >> 8);
+                    pxl[px*2 + 1]     = (uint8_t)(fg & 0xFF);
+                    pxl[(px+1)*2]     = (uint8_t)(fg >> 8);
+                    pxl[(px+1)*2 + 1] = (uint8_t)(fg & 0xFF);
+                }
+            }
+        }
+
+        lcd_set_window(g_x_off, g_y_off + dy,
+                       g_x_off + g_draw_w - 1, g_y_off + dy);
+        gpio_put(LCD_DC, 1);
+        gpio_put(LCD_CS, 0);
+        spi_write_blocking(SPI_PORT, pxl, g_draw_w * 2);
+        gpio_put(LCD_CS, 1);
+    }
+
+    // Refresh rows beyond the current text with clean background so nothing
+    // lingers from a previous metadata update that had more lines.
+    for (uint16_t dy = total_h; dy < max_h; dy++) {
+        read_blended_row(dy);
+        lcd_set_window(g_x_off, g_y_off + dy,
+                       g_x_off + g_draw_w - 1, g_y_off + dy);
+        gpio_put(LCD_DC, 1);
+        gpio_put(LCD_CS, 0);
+        spi_write_blocking(SPI_PORT, pxl, g_draw_w * 2);
+        gpio_put(LCD_CS, 1);
+    }
 }
 
 // --- Touch (CST816S, I2C) ---
@@ -513,28 +615,15 @@ int main(void) {
         lcd_fill(0xF800); while (true) tight_loop_contents();
     }
 
-    FIL bg_fil, fg_fil;
-    if (f_open(&bg_fil, "0:/commando.bmp", FA_READ) != FR_OK) {
+    if (f_open(&g_bg_fil, "0:/commando.bmp", FA_READ) != FR_OK) {
         lcd_fill(0x001F); while (true) tight_loop_contents();
     }
-    if (f_open(&fg_fil, "0:/controls.bmp", FA_READ) != FR_OK) {
+    if (f_open(&g_fg_fil, "0:/controls.bmp", FA_READ) != FR_OK) {
         lcd_fill(0xF81F); while (true) tight_loop_contents();
     }
 
-    display_blended(&bg_fil, &fg_fil);
-    f_close(&fg_fil);
-    f_close(&bg_fil);
-
-    // Draw placeholder so we know text rendering works before UART arrives
-    {
-        SidMeta placeholder = {0};
-        strncpy(placeholder.title,    "Waiting for player...", SID_TITLE_LEN - 1);
-        strncpy(placeholder.author,   "---", SID_AUTHOR_LEN - 1);
-        strncpy(placeholder.released, "----", SID_RELEASED_LEN - 1);
-        placeholder.song_num   = 0;
-        placeholder.song_count = 0;
-        display_metadata(&placeholder);
-    }
+    display_blended();
+    // Files kept open — display_metadata() re-reads rows for transparent text
 
     touch_init();
 
