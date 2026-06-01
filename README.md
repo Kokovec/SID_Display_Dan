@@ -20,6 +20,26 @@
 
 > **Note:** LCD and SD card share SPI1 — they are chip-select separated on GP9 and GP4.
 
+## Player Pico (`SID_Player_Dan`)
+
+| GPIO | Function     | Connected to                              |
+|------|---------------|-------------------------------------------|
+| GP0–GP7  | GPIO OUT     | SID D0–D7 (data bus)                    |
+| GP8–GP12 | GPIO OUT     | SID A0–A4 (address bus)                 |
+| GP13     | GPIO OUT     | SID /CS                                |
+| GP14     | —            | (unused)                               |
+| GP15     | GPIO OUT     | SID /RES                               |
+| GP16     | PWM          | SID phi2 clock (~985 kHz PAL)          |
+| GP17     | SPI0 CS      | SD card /CS                            |
+| GP18     | SPI0 SCK     | SD CLK                                 |
+| GP19     | SPI0 TX      | SD MOSI                                |
+| GP20     | SPI0 RX      | SD MISO                                |
+| GP21     | PIO UART TX  | → Display Pico GP1 (UART0 RX)          |
+| GP22     | PIO UART RX  | ← Display Pico GP0 (UART0 TX)          |
+
+> **Note:** SID R/W pin is tied directly to GND (write‑only operation).  
+> SID audio out is analog — comes straight from the SID chip’s **AUDIO OUT** pin to your output circuit, not through the Pico.
+
 
 ## Inter-Pico Link
 
