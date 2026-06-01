@@ -19,3 +19,11 @@
 | GP25 | LED           | Onboard LED                           |
 
 > **Note:** LCD and SD card share SPI1 — they are chip-select separated on GP9 and GP4.
+
+
+Inter-Pico Link
+
+Display GP0 (UART0 TX) ──────► Player GP22 (PIO RX)
+Display GP1 (UART0 RX) ◄────── Player GP21 (PIO TX)
+GND ──────────────────────────── GND
+115200 baud, packet-framed protocol defined in sid_comms.h.
