@@ -527,18 +527,22 @@ static bool touch_get(uint16_t *lx, uint16_t *ly) {
 // Button boxes are 48×48 px; coordinates below are the hit regions
 // derived from the given centres ± 24 px.
 
-typedef enum { BTN_NONE = 0, BTN_LAST = 1, BTN_PLAY = 2, BTN_STOP = 3, BTN_NEXT = 4 } Button;
+typedef enum { BTN_NONE = 0, BTN_LAST = 1, BTN_PLAY = 2, BTN_STOP = 3, BTN_NEXT = 4,
+               BTN_PREV_TUNE = 5, BTN_NEXT_TUNE = 6 } Button;
 
 static Button hit_button(uint16_t lx, uint16_t ly) {
-    // Shared vertical band (centres 118-119, half-size 24)
-    if (ly < 94 || ly > 142) return BTN_NONE;
-
-    // Left-to-right priority
-    if (lx >=   8 && lx <=  55) return BTN_LAST;   // centre x=32
-    if (lx >=  92 && lx <= 139) return BTN_PLAY;   // centre x=116
-    if (lx >= 180 && lx <= 227) return BTN_STOP;   // centre x=204
-    if (lx >= 262 && lx <= 309) return BTN_NEXT;   // centre x=286
-
+    // Top row: transport controls (centre y=118, ±24)
+    if (ly >= 94 && ly <= 142) {
+        if (lx >=   8 && lx <=  55) return BTN_LAST;       // centre x=32
+        if (lx >=  92 && lx <= 139) return BTN_PLAY;       // centre x=116
+        if (lx >= 180 && lx <= 227) return BTN_STOP;       // centre x=204
+        if (lx >= 262 && lx <= 309) return BTN_NEXT;       // centre x=286
+    }
+    // Bottom row: subtune controls (centre y=192, ±24)
+    if (ly >= 168 && ly <= 216) {
+        if (lx >=  91 && lx <= 139) return BTN_PREV_TUNE;  // centre x=115
+        if (lx >= 182 && lx <= 230) return BTN_NEXT_TUNE;  // centre x=206
+    }
     return BTN_NONE;
 }
 
@@ -679,10 +683,12 @@ int main(void) {
         if (touch_get(&lx, &ly)) {
             Button btn = hit_button(lx, ly);
             switch (btn) {
-                case BTN_LAST: comms_send_cmd(CMD_PREV); break;
-                case BTN_PLAY: comms_send_cmd(CMD_PLAY); break;
-                case BTN_STOP: comms_send_cmd(CMD_STOP); break;
-                case BTN_NEXT: comms_send_cmd(CMD_NEXT); break;
+                case BTN_LAST:      comms_send_cmd(CMD_PREV);      break;
+                case BTN_PLAY:      comms_send_cmd(CMD_PLAY);      break;
+                case BTN_STOP:      comms_send_cmd(CMD_STOP);      break;
+                case BTN_NEXT:      comms_send_cmd(CMD_NEXT);      break;
+                case BTN_PREV_TUNE: comms_send_cmd(CMD_PREV_TUNE); break;
+                case BTN_NEXT_TUNE: comms_send_cmd(CMD_NEXT_TUNE); break;
                 default: break;
             }
             if (btn != BTN_NONE) {
