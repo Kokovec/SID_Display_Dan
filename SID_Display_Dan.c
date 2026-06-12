@@ -556,10 +556,17 @@ static volatile uint8_t  rx_buf[RX_BUF_SIZE];
 static volatile uint16_t rx_head = 0;
 static volatile uint16_t rx_tail = 0;
 
+// Running count of bytes moved over the UART in either direction.
+// The main loop watches this to drive the onboard LED so it flickers
+// in proportion to the data rate (see led_activity_update()).
+static volatile uint32_t uart_activity = 0;
+
 static void uart_rx_irq(void) {
-    while (uart_is_readable(SID_UART))
+    while (uart_is_readable(SID_UART)) {
         rx_buf[rx_head = (rx_head + 1) & (RX_BUF_SIZE - 1)] =
             uart_getc(SID_UART);
+        uart_activity++;
+    }
 }
 
 static inline bool rx_empty(void)    { return rx_head == rx_tail; }
@@ -581,6 +588,7 @@ static void comms_send_cmd(uint8_t cmd) {
     uint8_t chk = PKT_TYPE_CMD ^ 1 ^ cmd;
     uint8_t pkt[] = { PKT_HDR0, PKT_HDR1, PKT_TYPE_CMD, 1, cmd, chk };
     uart_write_blocking(SID_UART, pkt, sizeof(pkt));
+    uart_activity += sizeof(pkt);
 }
 
 // Non-blocking metadata receiver.  Call every loop tick.
@@ -615,14 +623,33 @@ static bool comms_poll(SidMeta *meta) {
     return false;
 }
 
-// --- LED blink ---
+// --- UART traffic LED ---
+// Onboard LED as a simple TX/RX activity indicator: each burst of traffic
+// gives one short blip, then the LED goes dark.  The "off" is driven by a
+// one-shot timer (not the main loop) so the blip ends on schedule even
+// while on_new_meta() is busy redrawing the screen for a couple of seconds.
+#define LED_BLIP_MS 30
 
-static void blink(int n) {
-    for (int i = 0; i < n; i++) {
-        gpio_put(PICO_DEFAULT_LED_PIN, 1); sleep_ms(150);
-        gpio_put(PICO_DEFAULT_LED_PIN, 0);
-        if (i < n - 1) sleep_ms(150);
-    }
+static alarm_id_t led_off_alarm = 0;
+
+static int64_t led_off_cb(alarm_id_t id, void *user) {
+    (void)id; (void)user;
+    gpio_put(PICO_DEFAULT_LED_PIN, 0);
+    led_off_alarm = 0;
+    return 0;                                    // one-shot: don't reschedule
+}
+
+// Call once per main-loop tick.
+static void led_activity_update(void) {
+    static uint32_t last_count = 0;
+
+    uint32_t count = uart_activity;              // single read of the volatile
+    if (count == last_count) return;             // no new bytes: nothing to do
+    last_count = count;
+
+    gpio_put(PICO_DEFAULT_LED_PIN, 1);
+    if (led_off_alarm) cancel_alarm(led_off_alarm);
+    led_off_alarm = add_alarm_in_ms(LED_BLIP_MS, led_off_cb, NULL, true);
 }
 
 // --- Main ---
@@ -675,6 +702,9 @@ int main(void) {
     SidMeta meta = {0};
 
     while (true) {
+        // Pulse the onboard LED in step with TX/RX traffic
+        led_activity_update();
+
         // Receive metadata from Player Pico (non-blocking)
         if (comms_poll(&meta)) on_new_meta(&meta);
 
@@ -693,6 +723,7 @@ int main(void) {
             }
             if (btn != BTN_NONE) {
                 while (finger_down()) {
+                    led_activity_update();
                     if (comms_poll(&meta)) on_new_meta(&meta);
                     sleep_ms(20);
                 }
