@@ -1,3 +1,45 @@
+# 🎵 Raspberry Pi Pico SID Tune Player Display 
+A multi‑Pico hardware project for playing Commodore 64 SID tunes from an SD card.
+
+This system uses **three Raspberry Pi Pico boards** working together to deliver authentic SID playback, touchscreen controls, and visual artwork.
+
+---
+
+## 🧩 System Overview
+
+This project consists of:
+
+### **1. Player Pico 2 (RP2350)**
+- Reads `.sid` files from a micro SD card  
+- Handles tune playback logic  
+- Sends SID register writes to the SIDKick‑Pico board  
+
+### **2. Display Pico (RP2040) [SID Display Github Repo](https://github.com/Kokovec/SID_Display_Dan)**
+- Drives a **2” 240×320 IPS capacitive touchscreen**  
+- Shows tune metadata, background art, and playback controls  
+- Loads UI graphics from the display module’s onboard SD card  
+
+### **3. SIDKick‑Pico (DAC version)**
+- Acts as the SID chip replacement  
+- Receives register writes from the Player Pico  
+- Outputs authentic SID audio  
+
+---
+
+## ✨ Features
+
+- Playback of **mono SID** and **2SID** files  
+- Touchscreen UI with:
+  - Tune metadata  
+  - Background artwork  
+  - Tune & subtune selection  
+  - Playback controls  
+- Automatic background art loading based on tune filename  
+- Default artwork fallback when no tune‑specific image exists <br><br>
+
+
+
+
 ## Display Pico (`SID_Display_Dan`)
 
 | GPIO | Function     | Connected to                          |
