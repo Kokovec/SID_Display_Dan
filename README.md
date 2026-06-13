@@ -9,7 +9,7 @@ This system uses **three Raspberry Pi Pico boards** working together to deliver 
 
 This project consists of:
 
-### **1. Player Pico 2 (RP2350) [SID Display Github Repo]([https://github.com/Kokovec/SID_Display_Dan](https://github.com/Kokovec/SID_Player_Dan))**
+### **1. Player Pico 2 (RP2350) [SID Display Github Repo](https://github.com/Kokovec/SID_Player_Dan)**
 - Reads `.sid` files from a micro SD card  
 - Handles tune playback logic  
 - Sends SID register writes to the SIDKick‑Pico board  
