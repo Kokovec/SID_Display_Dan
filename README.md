@@ -64,7 +64,7 @@ This project uses the **Waveshare 2” Display Module**, featuring:
 All files should be placed into the root directory. <br>
 A collection of example background images is included in this repository.<br><br>
 
-![Alt_Text](docs/IMG_8421.JPEG)
+![Alt_Text](Docs/IMG_8421.JPEG)
 
 🔗 **Product page:**  
 https://www.waveshare.com/2inch-capacitive-touch-lcd.htm
