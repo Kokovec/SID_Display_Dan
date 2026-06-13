@@ -9,12 +9,12 @@ This system uses **three Raspberry Pi Pico boards** working together to deliver 
 
 This project consists of:
 
-### **1. Player Pico 2 (RP2350)**
+### **1. Player Pico 2 (RP2350) [SID Display Github Repo]([https://github.com/Kokovec/SID_Display_Dan](https://github.com/Kokovec/SID_Player_Dan))**
 - Reads `.sid` files from a micro SD card  
 - Handles tune playback logic  
 - Sends SID register writes to the SIDKick‑Pico board  
 
-### **2. Display Pico (RP2040) [SID Display Github Repo](https://github.com/Kokovec/SID_Display_Dan)**
+### **2. Display Pico (RP2040)**
 - Drives a **2” 240×320 IPS capacitive touchscreen**  
 - Shows tune metadata, background art, and playback controls  
 - Loads UI graphics from the display module’s onboard SD card  
