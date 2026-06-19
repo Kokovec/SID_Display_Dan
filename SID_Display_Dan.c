@@ -374,6 +374,15 @@ static void display_metadata(const SidMeta *m);  // forward declaration
 // Track the current song title so we reload the background only on song change
 static char g_bg_name[SID_TITLE_LEN + 1] = "";
 
+// 2SID stereo state reported by the Player (STEREO_NONE / CENTER / PANNED).
+// Shown as "Mono"/"Stereo" and gates the two stereo buttons.
+static uint8_t  g_stereo = STEREO_NONE;
+
+// Last metadata received, kept so a stereo-state change can re-render the
+// screen (the state arrives in its own packet, separate from metadata).
+static SidMeta  g_meta = {0};
+static bool     g_meta_valid = false;
+
 // Try to open <name>.bmp from SD root. Returns true on success.
 static bool try_open_bg(const char *name) {
     if (!name || name[0] == '\0') return false;
@@ -397,12 +406,21 @@ static void load_background(const SidMeta *m) {
 // Called whenever a new metadata packet arrives.
 // Uses title for change-detection (always populated); reloads background on change.
 static void on_new_meta(SidMeta *m) {
+    g_meta = *m;            // keep a copy for stereo-state re-renders
+    g_meta_valid = true;
     if (strncmp(m->title, g_bg_name, SID_TITLE_LEN) != 0) {
         strncpy(g_bg_name, m->title, SID_TITLE_LEN);
         g_bg_name[SID_TITLE_LEN] = '\0';
         load_background(m);
     }
     display_metadata(m);
+}
+
+// Called when the Player reports a new 2SID stereo state.
+static void on_new_stereo(uint8_t state) {
+    if (state == g_stereo) return;     // no change: avoid a needless redraw
+    g_stereo = state;
+    if (g_meta_valid) display_metadata(&g_meta);
 }
 
 // Render metadata transparently: for each display row in the text area,
@@ -425,6 +443,12 @@ static void display_metadata(const SidMeta *m) {
     if (slen < CPL2) memset(song + slen, ' ', CPL2 - slen);
     song[CPL2] = '\0';
     nl = layout_field(rl, nl, song, &y, 0xAFE5);          // green
+
+    // 2SID stereo state, when active (STEREO_NONE shows nothing)
+    if (g_stereo == STEREO_CENTER)
+        nl = layout_field(rl, nl, "Mono",   &y, 0xFFE0);  // yellow
+    else if (g_stereo == STEREO_PANNED)
+        nl = layout_field(rl, nl, "Stereo", &y, 0xFFE0);  // yellow
 
     if (nl == 0) return;
     uint16_t total_h  = rl[nl - 1].y + CHAR2H;
@@ -528,7 +552,8 @@ static bool touch_get(uint16_t *lx, uint16_t *ly) {
 // derived from the given centres ± 24 px.
 
 typedef enum { BTN_NONE = 0, BTN_LAST = 1, BTN_PLAY = 2, BTN_STOP = 3, BTN_NEXT = 4,
-               BTN_PREV_TUNE = 5, BTN_NEXT_TUNE = 6 } Button;
+               BTN_PREV_TUNE = 5, BTN_NEXT_TUNE = 6,
+               BTN_STEREO_CENTER = 7, BTN_STEREO_PANNED = 8 } Button;
 
 static Button hit_button(uint16_t lx, uint16_t ly) {
     // Top row: transport controls (centre y=118, ±24)
@@ -538,10 +563,12 @@ static Button hit_button(uint16_t lx, uint16_t ly) {
         if (lx >= 180 && lx <= 227) return BTN_STOP;       // centre x=204
         if (lx >= 262 && lx <= 309) return BTN_NEXT;       // centre x=286
     }
-    // Bottom row: subtune controls (centre y=192, ±24)
+    // Bottom row: subtune controls + 2SID stereo controls (centre y~192, ±24)
     if (ly >= 168 && ly <= 216) {
-        if (lx >=  91 && lx <= 139) return BTN_PREV_TUNE;  // centre x=115
-        if (lx >= 182 && lx <= 230) return BTN_NEXT_TUNE;  // centre x=206
+        if (lx >=   7 && lx <=  55) return BTN_STEREO_CENTER; // centre x=31  ("Mono")
+        if (lx >=  91 && lx <= 139) return BTN_PREV_TUNE;     // centre x=115
+        if (lx >= 182 && lx <= 230) return BTN_NEXT_TUNE;     // centre x=206
+        if (lx >= 261 && lx <= 309) return BTN_STEREO_PANNED; // centre x=285 ("Stereo")
     }
     return BTN_NONE;
 }
@@ -611,10 +638,15 @@ static bool comms_poll(SidMeta *meta) {
             case PL: buf[idx++] = b; chk ^= b;
                      if (idx >= len) state = CK; break;
             case CK:
-                if (b == chk && type == PKT_TYPE_META && len == sizeof(SidMeta)) {
-                    memcpy(meta, buf, sizeof(SidMeta));
-                    state = H0;
-                    return true;
+                if (b == chk) {
+                    if (type == PKT_TYPE_META && len == sizeof(SidMeta)) {
+                        memcpy(meta, buf, sizeof(SidMeta));
+                        state = H0;
+                        return true;
+                    }
+                    if (type == PKT_TYPE_STATE && len == 1) {
+                        on_new_stereo(buf[0]);   // re-renders if changed
+                    }
                 }
                 state = H0;
                 break;
@@ -719,6 +751,13 @@ int main(void) {
                 case BTN_NEXT:      comms_send_cmd(CMD_NEXT);      break;
                 case BTN_PREV_TUNE: comms_send_cmd(CMD_PREV_TUNE); break;
                 case BTN_NEXT_TUNE: comms_send_cmd(CMD_NEXT_TUNE); break;
+                // Stereo controls act only on 2SID files (state is active)
+                case BTN_STEREO_CENTER:
+                    if (g_stereo != STEREO_NONE) comms_send_cmd(CMD_STEREO_CENTER);
+                    break;
+                case BTN_STEREO_PANNED:
+                    if (g_stereo != STEREO_NONE) comms_send_cmd(CMD_STEREO_PANNED);
+                    break;
                 default: break;
             }
             if (btn != BTN_NONE) {
