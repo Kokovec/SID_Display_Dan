@@ -378,6 +378,25 @@ static char g_bg_name[SID_TITLE_LEN + 1] = "";
 static SidMeta  g_meta = {0};
 static bool     g_meta_valid = false;
 
+// Which foreground overlay is currently shown: false = controls.bmp,
+// true = Alphas.bmp.  Toggled by the top-right button.
+static bool     g_overlay_alt = false;
+
+// Alphas overlay: the letter currently shown (0 = 'A' .. 25 = 'Z').
+static uint8_t  g_alpha_idx = 0;
+
+// Set while waiting for the Player's reply to CMD_JUMP_LETTER: metadata means
+// a file was found (switch to controls); PKT_TYPE_NOMATCH means show a message.
+static bool     g_awaiting_jump = false;
+
+// "no matching files" message: shown transiently on the Alphas screen.
+#define NOMATCH_MSG    "no matching files"
+#define NOMATCH_Y      146                      // gap between arrows and Go button
+#define NOMATCH_COLOR  ALPHA_COLOR               // same cyan as the browse letter
+#define NOMATCH_MS     2500
+static bool             g_nomatch_shown = false;
+static absolute_time_t  g_nomatch_until = {0};
+
 // Try to open <name>.bmp from SD root. Returns true on success.
 static bool try_open_bg(const char *name) {
     if (!name || name[0] == '\0') return false;
@@ -398,17 +417,170 @@ static void load_background(const SidMeta *m) {
     display_blended();
 }
 
+// Alphas overlay: the big browse letter, superimposed over the background
+// (transparently, like the overlay buttons) just above the two arrow buttons.
+#define ALPHA_SCALE  6                       // 8x8 font -> 48x48 px
+#define ALPHA_W      (8 * ALPHA_SCALE)
+#define ALPHA_H      (8 * ALPHA_SCALE)
+#define ALPHA_X      (160 - ALPHA_W / 2)     // centred horizontally (x=160)
+#define ALPHA_Y      40                      // above the arrow buttons (y>=94)
+#define ALPHA_COLOR  0x07FF                   // cyan, matching the button icons
+
+// Draw the current letter over the composited background at ALPHA_X/Y.
+static void draw_alpha_letter(void) {
+    if (!g_bmp_ready) return;
+    const uint8_t *gl = font8x8[('A' + g_alpha_idx) - 0x20];
+
+    for (uint16_t gy = 0; gy < ALPHA_H; gy++) {
+        uint16_t dy = ALPHA_Y + gy;
+        read_blended_row(dy);                 // fill pxl[] with background+overlay
+        uint8_t bits = gl[gy / ALPHA_SCALE];  // font row (each repeated ALPHA_SCALE×)
+        for (int col = 0; col < 8; col++) {
+            if (!(bits & (1 << col))) continue;
+            for (int sx = 0; sx < ALPHA_SCALE; sx++) {
+                uint16_t px = ALPHA_X + col * ALPHA_SCALE + sx;
+                pxl[px*2]     = (uint8_t)(ALPHA_COLOR >> 8);
+                pxl[px*2 + 1] = (uint8_t)(ALPHA_COLOR & 0xFF);
+            }
+        }
+        lcd_set_window(g_x_off + ALPHA_X,            g_y_off + dy,
+                       g_x_off + ALPHA_X + ALPHA_W - 1, g_y_off + dy);
+        gpio_put(LCD_DC, 1);
+        gpio_put(LCD_CS, 0);
+        spi_write_blocking(SPI_PORT, &pxl[ALPHA_X * 2], ALPHA_W * 2);
+        gpio_put(LCD_CS, 1);
+    }
+}
+
+// Draw a short message (2x font) over the background, horizontally centred,
+// with its top at y_top.  Used for transient status text on the Alphas screen.
+static void draw_overlay_text(const char *s, uint16_t y_top, uint16_t fg) {
+    if (!g_bmp_ready) return;
+    int n = (int)strlen(s);
+    if (n * CHAR2W > g_draw_w) n = g_draw_w / CHAR2W;   // clamp to screen width
+    uint16_t wpx = (uint16_t)(n * CHAR2W);
+    uint16_t x0  = (g_draw_w - wpx) / 2;                 // centre horizontally
+
+    for (uint16_t gy = 0; gy < CHAR2H; gy++) {
+        uint16_t dy = y_top + gy;
+        read_blended_row(dy);
+        int frow = gy / 2;                               // 8-px font row, doubled
+        for (int ci = 0; ci < n; ci++) {
+            uint8_t c = (uint8_t)s[ci];
+            if (c < 0x20 || c > 0x7E) c = ' ';
+            uint8_t bits = font8x8[c - 0x20][frow];
+            for (int col = 0; col < 8; col++) {
+                if (!(bits & (1 << col))) continue;
+                int px = x0 + ci * CHAR2W + col * 2;
+                pxl[px*2]         = (uint8_t)(fg >> 8);
+                pxl[px*2 + 1]     = (uint8_t)(fg & 0xFF);
+                pxl[(px+1)*2]     = (uint8_t)(fg >> 8);
+                pxl[(px+1)*2 + 1] = (uint8_t)(fg & 0xFF);
+            }
+        }
+        lcd_set_window(g_x_off + x0, g_y_off + dy,
+                       g_x_off + x0 + wpx - 1, g_y_off + dy);
+        gpio_put(LCD_DC, 1);
+        gpio_put(LCD_CS, 0);
+        spi_write_blocking(SPI_PORT, &pxl[x0 * 2], wpx * 2);
+        gpio_put(LCD_CS, 1);
+    }
+}
+
+// Repaint the full-width text band (erasing any overlay text) with clean
+// background + overlay, leaving the rest of the Alphas screen untouched.
+static void clear_overlay_text(uint16_t y_top) {
+    if (!g_bmp_ready) return;
+    for (uint16_t gy = 0; gy < CHAR2H; gy++) {
+        uint16_t dy = y_top + gy;
+        read_blended_row(dy);
+        lcd_set_window(g_x_off, g_y_off + dy, g_x_off + g_draw_w - 1, g_y_off + dy);
+        gpio_put(LCD_DC, 1);
+        gpio_put(LCD_CS, 0);
+        spi_write_blocking(SPI_PORT, pxl, g_draw_w * 2);
+        gpio_put(LCD_CS, 1);
+    }
+}
+
+// Show the controls overlay with song m: correct background + metadata text.
+static void show_song(const SidMeta *m) {
+    g_overlay_alt   = false;
+    g_awaiting_jump = false;
+    g_nomatch_shown = false;
+    f_close(&g_fg_fil);
+    f_open(&g_fg_fil, "0:/controls.bmp", FA_READ);
+    load_background(m);                        // opens correct bg + display_blended
+    strncpy(g_bg_name, m->title, SID_TITLE_LEN);
+    g_bg_name[SID_TITLE_LEN] = '\0';
+    display_metadata(m);
+}
+
+// Show the Alphas browse overlay: background + Alphas buttons + letter 'A'.
+// Falls back to the controls screen if Alphas.bmp can't be opened.
+static void show_alphas(void) {
+    f_close(&g_fg_fil);
+    if (f_open(&g_fg_fil, "0:/Alphas.bmp", FA_READ) != FR_OK) {
+        if (g_meta_valid) show_song(&g_meta);
+        else { f_open(&g_fg_fil, "0:/controls.bmp", FA_READ); display_blended(); }
+        return;
+    }
+    g_overlay_alt   = true;
+    g_awaiting_jump = false;
+    g_nomatch_shown = false;
+    g_alpha_idx     = 0;                       // start on 'A'
+    display_blended();                        // background + Alphas buttons
+    draw_alpha_letter();                      // no song metadata in this mode
+}
+
+// Toggle between the controls and Alphas overlays (top-right button).
+static void toggle_overlay(void) {
+    if (g_overlay_alt) {
+        if (g_meta_valid) show_song(&g_meta);
+        else { g_overlay_alt = false;
+               f_close(&g_fg_fil); f_open(&g_fg_fil, "0:/controls.bmp", FA_READ);
+               display_blended(); }
+    } else {
+        show_alphas();
+    }
+}
+
 // Called whenever a new metadata packet arrives.
 // Uses title for change-detection (always populated); reloads background on change.
 static void on_new_meta(SidMeta *m) {
     g_meta = *m;
     g_meta_valid = true;
+    // While the Alphas browse screen is up, keep the metadata but don't
+    // paint over it; it is redrawn when we switch back to the controls.
+    if (g_overlay_alt) return;
     if (strncmp(m->title, g_bg_name, SID_TITLE_LEN) != 0) {
         strncpy(g_bg_name, m->title, SID_TITLE_LEN);
         g_bg_name[SID_TITLE_LEN] = '\0';
         load_background(m);
     }
     display_metadata(m);
+}
+
+// Route an incoming metadata packet.  If we were waiting on a letter jump,
+// the file was found: leave the Alphas screen and show the song.
+static void handle_meta(SidMeta *m) {
+    if (g_awaiting_jump) {
+        show_song(m);                 // switches to controls, clears the wait
+        g_meta = *m;
+        g_meta_valid = true;
+        return;
+    }
+    on_new_meta(m);
+}
+
+// The Player reported that CMD_JUMP_LETTER matched no file: show a transient
+// "no matching files" message and stay on the Alphas browse screen.
+static void on_nomatch(void) {
+    if (!g_awaiting_jump) return;
+    g_awaiting_jump = false;
+    if (!g_overlay_alt) return;       // no longer browsing; nothing to show
+    draw_overlay_text(NOMATCH_MSG, NOMATCH_Y, NOMATCH_COLOR);
+    g_nomatch_until = make_timeout_time_ms(NOMATCH_MS);
+    g_nomatch_shown = true;
 }
 
 // Render metadata transparently: for each display row in the text area,
@@ -534,9 +706,26 @@ static bool touch_get(uint16_t *lx, uint16_t *ly) {
 // derived from the given centres ± 24 px.
 
 typedef enum { BTN_NONE = 0, BTN_LAST = 1, BTN_PLAY = 2, BTN_STOP = 3, BTN_NEXT = 4,
-               BTN_PREV_TUNE = 5, BTN_NEXT_TUNE = 6 } Button;
+               BTN_PREV_TUNE = 5, BTN_NEXT_TUNE = 6, BTN_OVERLAY = 7,
+               BTN_ALPHA_PREV = 8, BTN_ALPHA_NEXT = 9, BTN_ALPHA_GO = 10 } Button;
 
 static Button hit_button(uint16_t lx, uint16_t ly) {
+    // Top-right corner: swap the controls / Alphas overlay (ABC / Back button)
+    if (lx >= 260 && ly <= 54) return BTN_OVERLAY;
+
+    if (g_overlay_alt) {
+        // Alphas overlay: two middle buttons scroll the browse letter A-Z
+        if (ly >= 94 && ly <= 142) {
+            if (lx >=  91 && lx <= 139) return BTN_ALPHA_PREV; // centre x=115
+            if (lx >= 181 && lx <= 229) return BTN_ALPHA_NEXT; // centre x=205
+        }
+        // Bottom-centre button: jump to the first file for this letter
+        if (ly >= 168 && ly <= 216 && lx >= 136 && lx <= 184)
+            return BTN_ALPHA_GO;                                // centre x=160
+        return BTN_NONE;
+    }
+
+    // Controls overlay
     // Top row: transport controls (centre y=118, ±24)
     if (ly >= 94 && ly <= 142) {
         if (lx >=   8 && lx <=  55) return BTN_LAST;       // centre x=32
@@ -597,6 +786,14 @@ static void comms_send_cmd(uint8_t cmd) {
     uart_activity += sizeof(pkt);
 }
 
+// Command carrying a one-byte argument (payload = [cmd][arg], len = 2).
+static void comms_send_cmd_arg(uint8_t cmd, uint8_t arg) {
+    uint8_t chk = PKT_TYPE_CMD ^ 2 ^ cmd ^ arg;
+    uint8_t pkt[] = { PKT_HDR0, PKT_HDR1, PKT_TYPE_CMD, 2, cmd, arg, chk };
+    uart_write_blocking(SID_UART, pkt, sizeof(pkt));
+    uart_activity += sizeof(pkt);
+}
+
 // Non-blocking metadata receiver.  Call every loop tick.
 // Returns true and fills *meta when a valid metadata packet arrives.
 static bool comms_poll(SidMeta *meta) {
@@ -622,6 +819,9 @@ static bool comms_poll(SidMeta *meta) {
                         memcpy(meta, buf, sizeof(SidMeta));
                         state = H0;
                         return true;
+                    }
+                    if (type == PKT_TYPE_NOMATCH && len >= 1) {
+                        on_nomatch();       // letter jump found no file
                     }
                 }
                 state = H0;
@@ -714,7 +914,13 @@ int main(void) {
         led_activity_update();
 
         // Receive metadata from Player Pico (non-blocking)
-        if (comms_poll(&meta)) on_new_meta(&meta);
+        if (comms_poll(&meta)) handle_meta(&meta);
+
+        // Remove the transient "no matching files" message after its timeout
+        if (g_nomatch_shown && time_reached(g_nomatch_until)) {
+            g_nomatch_shown = false;
+            if (g_overlay_alt) clear_overlay_text(NOMATCH_Y);
+        }
 
         // Handle touch
         uint16_t lx, ly;
@@ -727,12 +933,27 @@ int main(void) {
                 case BTN_NEXT:      comms_send_cmd(CMD_NEXT);      break;
                 case BTN_PREV_TUNE: comms_send_cmd(CMD_PREV_TUNE); break;
                 case BTN_NEXT_TUNE: comms_send_cmd(CMD_NEXT_TUNE); break;
+                case BTN_OVERLAY:   toggle_overlay();             break;
+                case BTN_ALPHA_PREV:
+                    g_alpha_idx = (g_alpha_idx == 0) ? 25 : g_alpha_idx - 1;
+                    draw_alpha_letter();
+                    break;
+                case BTN_ALPHA_NEXT:
+                    g_alpha_idx = (g_alpha_idx == 25) ? 0 : g_alpha_idx + 1;
+                    draw_alpha_letter();
+                    break;
+                case BTN_ALPHA_GO:
+                    // Ask the Player to jump; the reply decides what happens:
+                    // metadata -> show the song, NOMATCH -> "no matching files".
+                    comms_send_cmd_arg(CMD_JUMP_LETTER, 'A' + g_alpha_idx);
+                    g_awaiting_jump = true;
+                    break;
                 default: break;
             }
             if (btn != BTN_NONE) {
                 while (finger_down()) {
                     led_activity_update();
-                    if (comms_poll(&meta)) on_new_meta(&meta);
+                    if (comms_poll(&meta)) handle_meta(&meta);
                     sleep_ms(20);
                 }
                 sleep_ms(50);

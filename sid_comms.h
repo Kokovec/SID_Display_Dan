@@ -17,8 +17,10 @@
 #define PKT_HDR1        0x55
 
 // Packet types
-#define PKT_TYPE_META   0x01    // Player → Display : song metadata
-#define PKT_TYPE_CMD    0x02    // Display → Player : command
+#define PKT_TYPE_META    0x01   // Player → Display : song metadata
+#define PKT_TYPE_CMD     0x02   // Display → Player : command
+#define PKT_TYPE_NOMATCH 0x03   // Player → Display : CMD_JUMP_LETTER found no
+                                // file (1-byte payload = the letter, echoed)
 
 // Commands (single-byte payload in a CMD packet)
 #define CMD_PLAY        0x01    // play current file
@@ -28,6 +30,12 @@
 #define CMD_NEXT_TUNE     0x06    // next subtune within the current SID file
 #define CMD_PREV_TUNE     0x07    // previous subtune within the current SID file
 #define CMD_REQUEST_META  0x08    // request Player to re-send current metadata
+
+// Command with a one-byte argument (CMD packet payload = [cmd][arg], len = 2)
+#define CMD_JUMP_LETTER   0x09    // arg = ASCII 'A'-'Z': move SD pointer to the
+                                  // first file starting with that letter, then
+                                  // send metadata for it.  If no file matches,
+                                  // reply with a PKT_TYPE_NOMATCH packet instead.
 
 // -----------------------------------------------------------------------
 // Metadata payload  (Player → Display)
