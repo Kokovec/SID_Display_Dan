@@ -56,7 +56,8 @@ This project uses the **Waveshare 2” Display Module**, featuring:
 
 | Filename        | Purpose |
 |-----------------|---------|
-| `controls.bmp`  | Overlay graphic for playback controls |
+| `Controls.bmp`  | Overlay graphic for playback controls |
+| `Alphas.bmp`    | Overlay graphic for song jump controls |
 | `default.bmp`   | Shown when no tune‑specific art exists |
 | `<tune>.bmp`    | (Optional) Background art matching `<tune>.sid` |
 
